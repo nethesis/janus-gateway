@@ -6583,6 +6583,11 @@ void janus_sip_save_reason(sip_t const *sip, janus_sip_session *session) {
 void janus_sip_sdp_process(janus_sip_session *session, janus_sdp *sdp, gboolean answer, gboolean update, gboolean *changed) {
 	if(!session || !sdp)
 		return;
+	/* Save previous media direction state so we can detect hold/unhold transitions */
+	gboolean old_audio_recv = session->media.audio_recv;
+	gboolean old_audio_send = session->media.audio_send;
+	gboolean old_video_recv = session->media.video_recv;
+	gboolean old_video_send = session->media.video_send;
 	/* c= */
 	int opusred_pt = answer ? janus_sdp_get_opusred_pt(sdp, -1) : -1;
 	if(sdp->c_addr) {
@@ -6744,15 +6749,27 @@ void janus_sip_sdp_process(janus_sip_session *session, janus_sdp *sdp, gboolean 
 		temp = temp->next;
 	}
 
-	if(update && changed && *changed) {
-		/* Something changed: mark this on the session, so that the thread can update the sockets */
-		session->media.updated = TRUE;
-		if(session->media.pipefd[1] > 0) {
-			int code = 1;
-			ssize_t res = 0;
-			do {
-				res = write(session->media.pipefd[1], &code, sizeof(int));
-			} while(res == -1 && errno == EINTR);
+	if(update && changed) {
+		/* Detect media direction changes (e.g. hold/unhold transitions) even when
+		 * IP and port remain the same. Without this, the relay thread is never
+		 * notified after an unhold and inbound RTP stays frozen. */
+		if(!(*changed) && (old_audio_recv != session->media.audio_recv ||
+				old_audio_send != session->media.audio_send ||
+				old_video_recv != session->media.video_recv ||
+				old_video_send != session->media.video_send)) {
+			JANUS_LOG(LOG_VERB, "Media direction changed (hold/unhold), forcing session update\n");
+			*changed = TRUE;
+		}
+		if(*changed) {
+			/* Something changed: mark this on the session, so that the thread can update the sockets */
+			session->media.updated = TRUE;
+			if(session->media.pipefd[1] > 0) {
+				int code = 1;
+				ssize_t res = 0;
+				do {
+					res = write(session->media.pipefd[1], &code, sizeof(int));
+				} while(res == -1 && errno == EINTR);
+			}
 		}
 	}
 }
