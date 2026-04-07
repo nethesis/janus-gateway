@@ -7267,6 +7267,11 @@ static void *janus_sip_relay_thread(void *data) {
 	session->media.updated = TRUE; /* Connect UDP sockets upon loop entry */
 	gboolean have_audio_server_ip = TRUE;
 	gboolean have_video_server_ip = TRUE;
+	/* Debug counters for hold/unhold diagnosis */
+	guint64 audio_relay_count = 0;
+	guint64 audio_drop_recv_count = 0;
+	guint64 audio_drop_hold_count = 0;
+	gboolean log_next_audio_packets = FALSE;
 
 	while(goon && session != NULL && !g_atomic_int_get(&session->destroyed) &&
 			session->status > janus_sip_call_status_idle &&
@@ -7275,6 +7280,19 @@ static void *janus_sip_relay_thread(void *data) {
 		if(session->media.updated) {
 			/* Apparently there was a session update, or the loop has just been entered */
 			session->media.updated = FALSE;
+			JANUS_LOG(LOG_INFO, "[SIP-%s] Relay thread processing media update: "
+				"remote_audio_ip=%s remote_audio_rtp_port=%d "
+				"audio_recv=%d audio_send=%d on_hold=%d "
+				"relayed=%"SCNu64" dropped_recv=%"SCNu64" dropped_hold=%"SCNu64"\n",
+				session->account.username,
+				session->media.remote_audio_ip ? session->media.remote_audio_ip : "NULL",
+				session->media.remote_audio_rtp_port,
+				session->media.audio_recv, session->media.audio_send,
+				session->media.on_hold,
+				audio_relay_count, audio_drop_recv_count, audio_drop_hold_count);
+			/* Log the first 10 packets after this update to diagnose hold/unhold */
+			if(session->media.audio_recv && !session->media.on_hold)
+				log_next_audio_packets = TRUE;
 
 			/* Resolve the addresses, if needed */
 			have_audio_server_ip = FALSE;
@@ -7373,6 +7391,13 @@ static void *janus_sip_relay_thread(void *data) {
 			break;
 		} else if(resfd == 0) {
 			/* No data, keep going */
+			if(log_next_audio_packets && session->media.audio_recv && !session->media.on_hold) {
+				JANUS_LOG(LOG_WARN, "[SIP-%s] poll() timeout: no audio data 1s after unhold "
+					"(audio_rtp_fd=%d, relayed=%"SCNu64")\n",
+					session->account.username, session->media.audio_rtp_fd,
+					audio_relay_count);
+				log_next_audio_packets = FALSE;
+			}
 			continue;
 		}
 		if(session == NULL || g_atomic_int_get(&session->destroyed) ||
@@ -7442,10 +7467,24 @@ static void *janus_sip_relay_thread(void *data) {
 					pollerrs = 0;
 					if(!session->media.audio_recv) {
 						/* Dropping audio packet, we weren't expecting anything */
+						audio_drop_recv_count++;
+						if(audio_drop_recv_count <= 3 || audio_drop_recv_count % 1000 == 0) {
+							JANUS_LOG(LOG_WARN, "[SIP-%s] Dropping audio RTP: audio_recv=FALSE "
+								"(drop #%"SCNu64", on_hold=%d)\n",
+								session->account.username, audio_drop_recv_count,
+								session->media.on_hold);
+						}
 						continue;
 					}
 					if(session->media.on_hold && session->media.hold_audio_dir != JANUS_SDP_RECVONLY) {
-						/* Dropping video packet, the call is on hold and we're not receiving anything */
+						/* Dropping audio packet, the call is on hold and we're not receiving anything */
+						audio_drop_hold_count++;
+						if(audio_drop_hold_count <= 3 || audio_drop_hold_count % 1000 == 0) {
+							JANUS_LOG(LOG_WARN, "[SIP-%s] Dropping audio RTP: on_hold=TRUE "
+								"hold_dir=%d (drop #%"SCNu64")\n",
+								session->account.username,
+								session->media.hold_audio_dir, audio_drop_hold_count);
+						}
 						continue;
 					}
 					janus_rtp_header *header = (janus_rtp_header *)buffer;
@@ -7486,6 +7525,16 @@ static void *janus_sip_relay_thread(void *data) {
 						}
 					}
 					gateway->relay_rtp(session->handle, &rtp);
+					audio_relay_count++;
+					if(log_next_audio_packets) {
+						janus_rtp_header *dbg_header = (janus_rtp_header *)rtp.buffer;
+						JANUS_LOG(LOG_INFO, "[SIP-%s] Relayed audio RTP #%"SCNu64" after update "
+							"(seq=%"SCNu16", len=%d)\n",
+							session->account.username, audio_relay_count,
+							ntohs(dbg_header->seq_number), rtp.length);
+						if(audio_relay_count % 10 == 0)
+							log_next_audio_packets = FALSE;
+					}
 					continue;
 				} else if(session->media.audio_rtcp_fd != -1 && fds[i].fd == session->media.audio_rtcp_fd) {
 					/* Got something audio (RTCP) */
