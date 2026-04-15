@@ -7529,9 +7529,13 @@ static void *janus_sip_relay_thread(void *data) {
 					if(log_next_audio_packets) {
 						janus_rtp_header *dbg_header = (janus_rtp_header *)rtp.buffer;
 						JANUS_LOG(LOG_INFO, "[SIP-%s] Relayed audio RTP #%"SCNu64" after update "
-							"(seq=%"SCNu16", len=%d)\n",
+							"(ssrc=%"SCNu32", ts=%"SCNu32", seq=%"SCNu16", len=%d) "
+							"acontext.last_seq=%"SCNu16" acontext.last_ts=%"SCNu32"\n",
 							session->account.username, audio_relay_count,
-							ntohs(dbg_header->seq_number), rtp.length);
+							ntohl(dbg_header->ssrc), ntohl(dbg_header->timestamp),
+							ntohs(dbg_header->seq_number), rtp.length,
+							session->media.acontext.last_seq,
+							session->media.acontext.last_ts);
 						if(audio_relay_count % 10 == 0)
 							log_next_audio_packets = FALSE;
 					}

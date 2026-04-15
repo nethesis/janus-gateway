@@ -4798,8 +4798,11 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 				/* We don't spam the logs for every SRTP error: just take note of this, and print a summary later */
 				handle->srtp_errors_count++;
 				handle->last_srtp_error = res;
-				/* If we're debugging, though, print every occurrence */
-				JANUS_LOG(LOG_DBG, "[%"SCNu64"] ... SRTCP protect error... %s (len=%d-->%d)...\n", handle->handle_id, janus_srtp_error_str(res), pkt->length, protected);
+				if(handle->srtp_errors_count <= 5 || handle->srtp_errors_count % 500 == 0) {
+					JANUS_LOG(LOG_WARN, "[%"SCNu64"] SRTCP protect error: %s (len=%d-->%d, count=%d)\n",
+						handle->handle_id, janus_srtp_error_str(res), pkt->length, protected,
+						handle->srtp_errors_count);
+				}
 			} else {
 				/* Shoot! */
 				int sent = nice_agent_send(handle->agent, pc->stream_id, pc->component_id, protected, pkt->data);
@@ -4926,12 +4929,18 @@ static gboolean janus_ice_outgoing_traffic_handle(janus_ice_handle *handle, janu
 					/* We don't spam the logs for every SRTP error: just take note of this, and print a summary later */
 					handle->srtp_errors_count++;
 					handle->last_srtp_error = res;
-					/* If we're debugging, though, print every occurrence */
+					/* Log the first few errors of each burst so we can see exact seq/ts */
 					janus_rtp_header *header = (janus_rtp_header *)pkt->data;
 					guint32 timestamp = ntohl(header->timestamp);
 					guint16 seq = ntohs(header->seq_number);
-					JANUS_LOG(LOG_DBG, "[%"SCNu64"] ... SRTP protect error... %s (len=%d-->%d, ts=%"SCNu32", seq=%"SCNu16")...\n",
-						handle->handle_id, janus_srtp_error_str(res), pkt->length, protected, timestamp, seq);
+					guint32 ssrc = ntohl(header->ssrc);
+					if(handle->srtp_errors_count <= 5 || handle->srtp_errors_count % 500 == 0) {
+						JANUS_LOG(LOG_WARN, "[%"SCNu64"] SRTP protect error: %s "
+							"(len=%d-->%d, ssrc=%"SCNu32", ts=%"SCNu32", seq=%"SCNu16", count=%d)\n",
+							handle->handle_id, janus_srtp_error_str(res),
+							pkt->length, protected, ssrc, timestamp, seq,
+							handle->srtp_errors_count);
+					}
 					janus_ice_free_rtp_packet(p);
 				} else {
 					/* Shoot! */
