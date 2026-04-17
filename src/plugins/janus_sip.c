@@ -7272,6 +7272,12 @@ static void *janus_sip_relay_thread(void *data) {
 	guint64 audio_drop_recv_count = 0;
 	guint64 audio_drop_hold_count = 0;
 	gboolean log_next_audio_packets = FALSE;
+	/* Monotonic seq counter for outbound audio: janus_rtp_header_update can
+	 * generate seq numbers that regress after hold/unhold cycles when the
+	 * Asterisk RTP seq wraps uint16 during hold (packets dropped but seq
+	 * advances). This causes srtp_protect to fail with replay_old.
+	 * Using a simple monotonic counter guarantees strictly increasing seq. */
+	guint16 audio_out_seq = 0;
 
 	while(goon && session != NULL && !g_atomic_int_get(&session->destroyed) &&
 			session->status > janus_sip_call_status_idle &&
@@ -7508,6 +7514,12 @@ static void *janus_sip_relay_thread(void *data) {
 					}
 					/* Check if the SSRC changed (e.g., after a re-INVITE or UPDATE) */
 					janus_rtp_header_update(header, &session->media.acontext, FALSE, 0);
+					/* Override seq with monotonic counter: janus_rtp_header_update
+					 * can produce regressing seq after hold/unhold when Asterisk's
+					 * RTP seq wraps uint16 during a long hold. We keep the timestamp
+					 * from acontext (handles time gaps) but use our own seq. */
+					audio_out_seq++;
+					header->seq_number = htons(audio_out_seq);
 					/* Save the frame if we're recording */
 					header->ssrc = htonl(session->media.audio_ssrc_peer);
 					janus_recorder_save_frame(session->arc_peer, buffer, bytes);
